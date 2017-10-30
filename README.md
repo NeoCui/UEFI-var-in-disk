@@ -1,0 +1,1 @@
+# UEFI-var-in-disk
