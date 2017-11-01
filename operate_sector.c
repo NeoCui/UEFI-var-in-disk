@@ -6,22 +6,34 @@
 #define DISK_NAME "/dev/sda"
 
 /**
- * Read a set of Blocks into the Buffer
- * Block size is 512bytes
+ * Initialize the Disk
  */
-int readFromDisk(char* buffer, int length)
+int initDisk()
 {
-    ssize_t readBytes;
     int fd = open(DISK_NAME, O_RDWR);
 
     if(fd < 0){
         perror("Couldn't open device.");
         return 1;
-    }
+    } 
+    return fd;
+}
+/**
+ * Read a set of Blocks into the Buffer
+ * Block size is 512bytes
+ */
+int readFromDisk(int DiskId, char* buffer, int length)
+{
+    ssize_t readBytes;
 
-    readBytes = read(fd, buffer, length);
-    printf("%s\n", buffer);
-    close(fd);
+    readBytes = read(DiskId, buffer, length);
+
+    FILE *fp;
+    fp = fopen("data", "wb");
+    fwrite(buffer, 512, 1, fp);
+    fclose(fp);
+    printf("%d\n", (int)readBytes);
+    close(DiskId);
 
     return 0;
 }
@@ -29,19 +41,13 @@ int readFromDisk(char* buffer, int length)
 /**
  * Write the buffer content to HDD
  */
-int writeToDisk(char* buffer, int length)
+int writeToDisk(int DiskId, char* buffer, int length)
 {
     ssize_t writeBytes;
-    int fd = open(DISK_NAME, O_RDWR);
 
-    if(fd < 0){
-        perror("Couldn't open device.");
-        return 1;
-    }
-
-    writeBytes = write(fd, buffer, length);
+    writeBytes = write(DiskId, buffer, length);
     printf("%s\n", buffer);
-    close(fd);
+    close(DiskId);
 
     return 0;
 }
@@ -49,28 +55,34 @@ int writeToDisk(char* buffer, int length)
 /**
  * Seek out a block in the Disk
  */
-int seekDisk()
+int seekDisk(int DiskId)
 {
     printf("Seeking the Disk...\n");
-    int fd = open(DISK_NAME, O_RDWR);
     
-    if( lseek(fd, 0, SEEK_SET) != 0 ){
+    if( lseek(DiskId, 0, SEEK_SET) != 0 ){
         perror("Couldn't seek!\n");
-        close(fd);
+        close(DiskId);
         return 1;
     }
-    close(fd);
+    close(DiskId);
     return 0;
 }
 
-int mian()
+int main()
 {
     printf("Running the Disk operation tool\n");
 
+    int DiskId;
+
     char buffer[1024];
-    readFromDisk(buffer, 512);
-    seekDisk();
-    writeToDisk(buffer, 300);
+    DiskId = initDisk();
+    readFromDisk(DiskId, buffer, 1024);
+
+    DiskId = initDisk();
+    seekDisk(DiskId);
+
+    DiskId = initDisk();
+    writeToDisk(DiskId, buffer, 1024);
 
     return 0;
 }
