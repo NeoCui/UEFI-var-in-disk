@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <sys/fcntl.h>
 #include <stdio.h>
+#include <string.h>
 
 #define DISK_NAME "/dev/sda"
 
@@ -33,6 +34,7 @@ int readFromDisk(int DiskId, char* buffer, int length)
     fwrite(buffer, 512, 1, fp);
     fclose(fp);
     printf("%d\n", (int)readBytes);
+    printf("%#x\n", buffer);
     close(DiskId);
 
     return 0;
@@ -46,7 +48,8 @@ int writeToDisk(int DiskId, char* buffer, int length)
     ssize_t writeBytes;
 
     writeBytes = write(DiskId, buffer, length);
-    printf("%s\n", buffer);
+    printf("%d\n", (int)writeBytes);
+    printf("%#x\n", buffer);
     close(DiskId);
 
     return 0;
@@ -76,13 +79,16 @@ int main()
 
     char buffer[1024];
     DiskId = initDisk();
-    readFromDisk(DiskId, buffer, 1024);
+    readFromDisk(DiskId, buffer, 512);
 
     DiskId = initDisk();
     seekDisk(DiskId);
 
+    char wbuffer[440];
+    strcpy(wbuffer, "Hello, world!");  
+
     DiskId = initDisk();
-    writeToDisk(DiskId, buffer, 1024);
+    writeToDisk(DiskId, wbuffer, 440);
 
     return 0;
 }
