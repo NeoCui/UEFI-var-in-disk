@@ -1,27 +1,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <efivar.h>
-#include <efiboot.h>
 #include <getopt.h>
 #include <string.h>
-#include <inttypes.h>
 
-#include "list.h"
 #include "efi2disk.h"
-#include "unparse_path.h"
+#include "error.h"
 
 #ifndef TOOL_VERSION
-#define TOOL_VERSION "v1.0"
+#define TOOL_VERSION v1.0
 #endif
 
-#define DEFAULT_LOADER "hello"
-
-int verbose;
+/* global variables */
 static LIST_HEAD(entry_list);
 static LIST_HEAD(blk_list);
+int verbose;
 efi2disk_opt_t opts;
 
-typedef struct _var_entry{
+typedef struct _uefi_var {
 	char*       name;
 	efi_guid_t  guid;
 	uint8_t*    data;
@@ -29,44 +25,14 @@ typedef struct _var_entry{
 	uint32_t    attributes;
 	uint16_t    num;
     list_t      list;
-} var_entry_t;
-
-#define ev_bits(val, mask, shift) \
-    (((val) & ((mask) << (shift))) >> (shift))
-
-static inline char* ucs2_to_utf8(const uint16_t* const chars, ssize_t limit)
-{
-    ssize_t i, j;
-    char* ret;
-
-    ret = alloca(limit * 6 + 1);
-    if(!ret)
-        return NULL;
-    memset(ret, 0, limit * 6 + 1);
-
-    for(i = 0, j = 0; chars[i] && i < (limit >= 0 ? limit : i+1); i++, j++){
-        if(chars[i] <= 0x7f){
-            ret[j] = chars[i];
-        }else if(chars[i] > 0x7f && chars[i] <= 0x7ff){
-            ret[j++] = 0xc0 | ev_bits(chars[i], 0x1f, 6);
-            ret[j] = 0x80 | ev_bits(chars[i], 0x3f, 0);
-        }else if(chars[i] > 0x7ff){
-            ret[j++] = 0xe0 | ev_bits(chars[i], 0xf, 12);
-            ret[j++] = 0x80 | ev_bits(chars[i], 0x3f, 6);
-            ret[j] = 0x80 | ev_bits(chars[i], 0x3f, 0);
-        }
-    }
-    ret[j] = '\0';
-    return strdup(ret);
-}
+} uefi_var_t;
 
 static void free_vars(list_t* head)
 {
-    list_t* pos;
-    list_t* n;
-    var_entry_t* entry;
+    list_t *pos, *n;
+    uefi_var_t* entry;
 
-    list_for_each_safe(pos, n, head){
+    list_for each_safe(pos, n, head){
         entry = list_entry(pos, var_entry_t, list);
         if(entry->data)
             free(entry->data);
@@ -77,27 +43,25 @@ static void free_vars(list_t* head)
 
 static void read_vars(char** namelist, list_t* head)
 {
-    var_entry_t* entry;
+    uefi_var_t* entry;
     int i, rc;
-    
+
     if(!namelist)
         return;
 
     for(i=0; namelist[i] != NULL; i++){
         if(namelist[i]){
-            entry = malloc(sizeof(var_entry_t));
+            entry = malloc(sizeof(uefi_var_t));
             if(!entry){
-                efi_error("malloc(%zd) failed", sizeof(var_entry_t));
+                efi_error("malloc(%zd) failed",sizeof(uefi_var_t));
                 goto err;
             }
-            memset(entry, 0, sizeof(var_entry_t));
+            memset(entry, 0, sizeof(uefi_var_t));
 
             rc = efi_get_variable(EFI_GLOBAL_GUID, namelist[i],
-                            &entry->data, &entry->data_size,
-                            &entry->attributes);
+                    &entry->data, &entry->data_size, &entry->attributes);
             if(rc < 0){
-                printf("Skipping unreadable variable \"%s\"",
-                        namelist[i]);
+                warning("Skipping unreadable variable \"%s"\"", namelist[i]);
                 free(entry);
                 continue;
             }
@@ -113,18 +77,97 @@ err:
     exit(1);
 }
 
+static void free_array(char** array){
+    int i;
+    if(!array)
+        return;
+    
+    for(i=0; array[i] != NULL; i++)
+        free(arrary[i]);
+
+    free(array);
+}
+
+static int read_order(const char* name, uef_var_t** order)
+{
+    int rc;
+    uefi_var_t* new = NULL;
+    uefi_var_t* bo = NULL;
+
+    if(*order == NULL){
+        new = calloc(1, sizeof(**order));
+        if(!new){
+            efi_err("calloc(1,%zd) failed.", sizeof(**order));
+            return -1;
+        }
+        *order = bo = new;
+    }else{
+        bo = *order;
+    }
+
+    rc = efi_get_variable(EFI_GLOBAL_GUID, name,
+            &bo->data, &bo->data_size, &bo->attributes);
+    if(rc < 0 && new != NULL){
+        efi_error("efi_get_variable failed.");
+        free(new);
+        *order = NULL;
+        bo = NULL;
+    }
+
+    if(bo){
+        bo->attributes = bo->attributes & ~(1 << 31);
+    }
+    return rc;
+}
+
+static void set_var_nums(const char* prefix, list_t* list)
+{
+    list_t* pos;
+    uefi_var_t* var;
+    int num = 0, rc;
+    char* name;
+    int warn = 0;
+    size_t plen = strlen(prefix);
+    char fmt[30];
+
+    fmt[0] = '\0';
+    strcat(fmt, prefix);
+    strcat(fmt, "%04X-%*s");
+
+    list_for_each(pos, list){
+        var = list_entry(pos, uefi_var_t, list);
+        rc = sscanf(var->name, fmt, &num);
+        if(rc == 1){
+            char* snum;
+            var->num = num;
+            name = var->name;
+            snum = name + plen;
+            if((isalpha(snum[0]) && islower(snum[0])) ||
+                isalpha(snum[1]) && islower(snum[1])) ||
+                isalpha(snum[2]) && islower(snum[2])) ||
+                isalpha(snum[3]) && islower(snum[3]))){
+                    fprintf(stderr,
+                            "*Warning*:%.8s is not UEFI spec compliant (lowercase hex in name)\n",name);
+                    warn++;
+                }
+        }
+    }
+    if(warn)
+        warningx("*Warning*":Bad efi variable found.");
+}
+
 static void show_vars(const char* prefix)
 {
     list_t* pos;
-    var_entry_t* boot;
-    const unsigned char* description;
+    uefi_var_t* boot;
+    const unsigned char *description;
     efi_load_option* load_option;
     efidp dp = NULL;
     unsigned char* optional_data = NULL;
     size_t optional_data_len = 0;
 
     list_for_each(pos, &entry_list){
-        boot = list_entry(pos, var_entry_t, list);
+        boot = list_entry(pos, uefi_var_t, list);
         load_option = (efi_load_option*)boot->data;
         description = efi_loadopt_desc(load_option, boot->data_size);
         if(boot->name)
@@ -132,62 +175,11 @@ static void show_vars(const char* prefix)
         else
             printf("%s%04X", prefix, boot->num);
 
+        printf("%c ", (efi_loadopt_attrs(load_option) & LOAD_OPTION_ACTIVE) ? '*' : ' ');
+        printf("%s", description);
+
         if(opts.verbose){
-            char* text_path = NULL;
-            size_t text_path_len = 0;
-            uint16_t pathlen;
-            ssize_t rc;
 
-            pathlen = efi_loadopt_pathlen(load_option, boot->data_size);
-            dp = efi_loadopt_path(load_option, boot->data_size);
-            rc = efidp_format_device_path(text_path, text_path_len, dp, pathlen);
-            if(rc < 0)
-                perror("Couldn't parse device path.");
-            rc += 1;
-
-            text_path_len = rc;
-            text_path = calloc(1, rc);
-            if(!text_path)
-                perror("Could not parse device path");
-
-            rc = efidp_format_device_path(text_path, text_path_len, dp, pathlen);
-            if(rc < 0)
-                perror("Could not parse device path");
-            printf("\t%s", text_path);
-            free(text_path);
-            text_path_len = 0;
-
-            rc = efi_loadopt_optional_data(load_option,
-                                boot->data_size,
-                                &optional_data,
-                                &optional_data_len);
-            if( rc<0 )
-                perror("Could not parse optional data.");
-            
-            if(opts.unicode){
-                text_path = ucs2_to_utf8((uint16_t*)optional_data, optional_data_len/2);
-            }else{
-                rc = unparse_raw_text(NULL, 0, optional_data,
-                                optional_data_len);
-                if(rc < 0)
-                    perror("Couldn't parse optional data");
-                rc += 1;
-                text_path_len = rc;
-                text_path = calloc(1, rc);
-                if(!text_path)
-                    perror("Could not parse optional data");
-                rc = unparse_raw_text(text_path, text_path_len,
-                                optional_data, optional_data_len);
-                if(rc < 0)
-                    perror("could not parse device path.");
-            }
-            printf("%s", text_path);
-            free(text_path);
-        }
-        printf("\n");
-        fflush(stdout);
-    }
-}
 
 static void usage()
 {
@@ -200,7 +192,7 @@ static void usage()
 
 static void set_default_opts()
 {
-	memset(&opts, 0, sizeof(opts));
+	memset(&opt, 0, sizeof(opts));
 	opts.num		= -1;
 	opts.edd10_devicenum	= 0x80;
 	opts.loader		= DEFAULT_LOADER;
@@ -225,7 +217,8 @@ static void parse_opts(int argc, char** argv)
 			{0, 0, 0, 0}
 		};
 
-		c = getopt_long(argc, argv, "r::Vh", long_options, &option_index);
+		c = getopt_long (argc, argv, "v::Vh", 
+				long_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c)
@@ -233,13 +226,14 @@ static void parse_opts(int argc, char** argv)
 			case 'r':
 				opts.verbose += 1;
 				if (optarg) {
-					if (!strcmp(optarg, "r"))
+					if (!strcmp(optarg, "r")
 						opts.verbose = 2;
 					rc = sscanf(optarg, "%u", &num);
 					if (rc == 1)
-						opts.verbose = num;
+						opts.verbose = num
 					else
-						perror("invalid numeric value.\n");
+						errorx(39,
+							"invalid numeric value %s\n", optarg);
 				}
 				break;
 			case 'V':
@@ -265,15 +259,45 @@ static void parse_opts(int argc, char** argv)
 
 int main(int argc, char** argv)
 {
+    char** name = NULL;
+    var_entry_t* new_entry=NULL;
+    int num;
+    int ret=0;
+    ebm_mode mode = boot;
+    char* prefices[] = {
+        "Boot";
+    };
+    char* order_name[] = {
+        "BootOrder"
+    };
+
+    putenv("LIBEFIBOOT_REPORT_GPT_ERRORS=1");
+    set_default_opts();
 	parse_opts(argc, argv);
 	if (opts.showversion) {
 		printf("version %s\n", TOOL_VERSION);
 		return 0;
 	}
 
-    verbose = opts.verbose;
+	if (!efi_variables_supported())
+		errorx(2, "EFI variables are not supported on this system.");
 
-//	if (!efi_variables_supported())
-//		perror("EFI variables are not supported on this system.");
+    read_var_names(prefices[mode], &name);
+    read_vars(names, &entry_list);
+    set_var_nums(prefices[mode], &entry_list);
+
+    if(!opts.quiet && ret == 0){
+        switch(mode){
+            case boot:
+                show_order(order_name[mode]);
+                show_vars(prefices[mode]);
+                break;
+        }
+    }
+    free_vars(&entry_list);
+    free_array(names);'
+    if (ret)
+        return 1;
+
 	return 0;
 }
