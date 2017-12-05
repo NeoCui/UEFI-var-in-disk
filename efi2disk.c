@@ -179,7 +179,85 @@ static void show_vars(const char* prefix)
         printf("%s", description);
 
         if(opts.verbose){
+            char* text_path = NULL;
+            size_t text_path_len = 0;
+            uinit16_t pathlen;
+            ssize_t rc;
 
+            pathlen = efi_loadopt_pathlen(load_option, boot->data_size);
+            dp = efi_loadopt_path(load_option, boot->data_size);
+            rc = efidp_format_device_path(text_path, text_path_len, dp, pathlen);
+
+            if(rc < 0)
+                error(18, "Could not parse device path");
+            rc += 1;
+
+            text_path_len = rc;
+            text_path = calloc(1, rc);
+            if(!text_path)
+                error(19, "Could not parse device path");
+            rc = efidp_format_device_path(text_path, text_path_len, dp, pathlen);
+            if(rc < 0)
+                error(20, "Could not parse device path");
+            printf("\t%s", text_path);
+            free(text_path);
+            text_path_len = 0;
+
+            rc = efi_loadopt_optional_data(load_option, boot->data_size,
+                                            &optional_data, &optional_data_len);
+            if(rc < 0)
+                error(21, "Could not parse optional data");
+
+            if(opts.unicode){
+                text_path = ucs2_to_utf8((uint16_t*)optional_data, optional_data_len/2);
+            }else{
+                rc = unparse_raw_text(NULL, 0, optional_data, optional_data_len);
+                if(rc < 0)
+                    error(22, "Could not parse optional data");
+                rc += 1;
+                text_path_len = rc;
+                text_path = calloc(1, rc);
+                if(!text_path)
+                    error(23, "Could not parse optional data");
+                rc = unparse_raw_text(text_path, text_path_len,
+                                optional_data, optional_data_len);
+                if(rc < 0)
+                    error(24, "Could not parse optional data");
+            }
+            printf("%s", text_path);
+            free(text_path);
+        }
+        printf("\n");
+        fflush(stdout);
+    }
+}
+    
+static void show_order(const char* name)
+{
+    int rc;
+    uefi_var_t* order = NULL;
+    uint16_t* data;
+
+    rc = read_order(name, &order);
+    
+    if(rc < 0){
+        if(errno == ENOENT){
+            if(!strcmp(name, "BootOrder"))
+                printf("No BootOrder is set\n");
+            else
+                printf("No %s is set\n", name);
+        }else
+            perror("show_order()");
+        return;
+    }
+
+        data = (uint16_t*)order->data;
+        if(order->data_size){
+            print_order(name, data, order->data_size/sizeof(uint16_t));
+            free(order->data);
+        }
+        free(order);
+}    
 
 static void usage()
 {
